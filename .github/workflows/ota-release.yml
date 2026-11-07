@@ -1,0 +1,61 @@
+name: Publish OTA firmware
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "src/**"
+      - "include/**"
+      - "lib/**"
+      - "platformio.ini"
+      - "scripts/**"
+      - "data/cert/**"
+      - ".github/workflows/ota-release.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ota-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Install PlatformIO
+        run: python -m pip install platformio
+
+      - name: Build ESP32-C3 firmware
+        run: pio run --environment esp32-c3-devkitm-1
+        env:
+          FIRMWARE_VERSION: ${{ github.sha }}
+
+      - name: Publish latest OTA release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FIRMWARE_ASSET: .pio/build/esp32-c3-devkitm-1/firmware.bin
+          RELEASE_TAG: ota-${{ github.sha }}
+        run: |
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" "$FIRMWARE_ASSET" --clobber --repo "$GITHUB_REPOSITORY"
+            gh release edit "$RELEASE_TAG" --latest --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$RELEASE_TAG" "$FIRMWARE_ASSET" \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --title "Firmware ${GITHUB_SHA::7}" \
+              --notes "Automatikus OTA firmware az ESP32-C3 vezérlőhöz." \
+              --latest
+          fi

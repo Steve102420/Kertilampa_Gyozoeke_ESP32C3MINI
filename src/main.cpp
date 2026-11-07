@@ -1,9 +1,14 @@
 #include <Arduino.h>
+#include <HTTPClient.h>
+#include <HTTPUpdate.h>
 #include <WebServer.h>
 #include <Preferences.h>
 #include <ESPmDNS.h>
 #include <WiFi.h>
+#include <WiFiClientSecure.h>
 #include <time.h>
+
+extern const uint8_t rootca_crt_bundle_start[] asm("_binary_data_cert_x509_crt_bundle_bin_start");
 
 namespace
 {
@@ -18,6 +23,17 @@ constexpr char AP_PASSWORD[] = "KertiLampa4";
 constexpr char NTP_SERVER_1[] = "pool.ntp.org";
 constexpr char NTP_SERVER_2[] = "time.google.com";
 constexpr char DEFAULT_TIME_ZONE[] = "Europe/Budapest";
+constexpr char OTA_RELEASES_API[] =
+    "https://api.github.com/repos/Steve102420/Kertilampa_Gyozoeke_ESP32C3MINI/releases/latest";
+constexpr char OTA_RELEASE_DOWNLOAD[] =
+    "https://github.com/Steve102420/Kertilampa_Gyozoeke_ESP32C3MINI/releases/latest/download/firmware.bin";
+constexpr char OTA_TAG_PREFIX[] = "ota-";
+constexpr uint32_t OTA_HTTP_TIMEOUT_MS = 15000;
+constexpr uint32_t OTA_TASK_STACK_SIZE = 8192;
+
+#ifndef FIRMWARE_VERSION
+#define FIRMWARE_VERSION "development"
+#endif
 
 struct TimeZoneOption
 {
@@ -59,6 +75,9 @@ unsigned long rampStartedAt = 0;
 unsigned long rampDuration = 0;
 bool ntpConfigured = false;
 bool scheduleCheckedAfterBoot = false;
+bool otaStartupCheckDone = false;
+int lastOtaCheckDate = -1;
+volatile bool otaCheckInProgress = false;
 int lastNtpSyncDate = -1;
 unsigned long lastReconnectAttempt = 0;
 
@@ -642,6 +661,157 @@ void reconnectWifiIfNeeded()
   lastReconnectAttempt = millis();
   WiFi.begin(savedSsid.c_str(), preferences.getString("password", "").c_str());
 }
+
+String extractJsonStringField(const String &json, const char *field)
+{
+  String key = "\"" + String(field) + "\"";
+  int position = json.indexOf(key);
+  if (position < 0)
+    return "";
+
+  position = json.indexOf(':', position + key.length());
+  if (position < 0)
+    return "";
+  ++position;
+  while (position < static_cast<int>(json.length()) && isspace(json[position]))
+    ++position;
+  if (position >= static_cast<int>(json.length()) || json[position] != '"')
+    return "";
+
+  String value;
+  for (++position; position < static_cast<int>(json.length()); ++position)
+  {
+    const char c = json[position];
+    if (c == '"')
+      return value;
+    if (c == '\\')
+      return "";
+    value += c;
+  }
+  return "";
+}
+
+bool validOtaTag(const String &tag)
+{
+  if (!tag.startsWith(OTA_TAG_PREFIX) ||
+      tag.length() != strlen(OTA_TAG_PREFIX) + 40)
+    return false;
+
+  for (size_t i = strlen(OTA_TAG_PREFIX); i < tag.length(); ++i)
+  {
+    const char c = tag[i];
+    if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')))
+      return false;
+  }
+  return true;
+}
+
+void performOtaCheck()
+{
+  WiFiClientSecure secureClient;
+  secureClient.setCACertBundle(rootca_crt_bundle_start);
+
+  HTTPClient http;
+  http.setTimeout(OTA_HTTP_TIMEOUT_MS);
+  http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+  if (!http.begin(secureClient, OTA_RELEASES_API))
+  {
+    Serial.println("OTA hiba: nem sikerült elindítani a GitHub verzióellenőrzést.");
+    return;
+  }
+
+  http.addHeader("Accept", "application/vnd.github+json");
+  http.addHeader("X-GitHub-Api-Version", "2022-11-28");
+  const int responseCode = http.GET();
+  if (responseCode != HTTP_CODE_OK)
+  {
+    Serial.printf("OTA hiba: a GitHub verzióellenőrzés HTTP-kódja: %d\n",
+                  responseCode);
+    http.end();
+    return;
+  }
+
+  const String response = http.getString();
+  http.end();
+  const String latestTag = extractJsonStringField(response, "tag_name");
+  if (!validOtaTag(latestTag))
+  {
+    Serial.println("OTA hiba: hiányzó vagy érvénytelen GitHub kiadási verzió.");
+    return;
+  }
+
+  const String latestVersion = latestTag.substring(strlen(OTA_TAG_PREFIX));
+  if (latestVersion == FIRMWARE_VERSION)
+  {
+    Serial.printf("OTA: a firmware naprakész (%s).\n", FIRMWARE_VERSION);
+    return;
+  }
+
+  Serial.printf("OTA: új verzió érhető el (%s); letöltés indul.\n",
+                latestVersion.c_str());
+  HTTPUpdate updater;
+  updater.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+  updater.rebootOnUpdate(true);
+  const t_httpUpdate_return result =
+      updater.update(secureClient, OTA_RELEASE_DOWNLOAD, FIRMWARE_VERSION);
+  if (result == HTTP_UPDATE_FAILED)
+  {
+    Serial.printf("OTA hiba: %s\n", updater.getLastErrorString().c_str());
+  }
+  else if (result == HTTP_UPDATE_NO_UPDATES)
+  {
+    Serial.println("OTA: a GitHub nem kínál új firmware-t.");
+  }
+}
+
+void otaCheckTask(void *)
+{
+  performOtaCheck();
+  otaCheckInProgress = false;
+  vTaskDelete(nullptr);
+}
+
+bool startOtaCheck()
+{
+  if (otaCheckInProgress)
+    return false;
+
+  otaCheckInProgress = true;
+  if (xTaskCreate(otaCheckTask, "ota-check", OTA_TASK_STACK_SIZE, nullptr, 1,
+                  nullptr) != pdPASS)
+  {
+    otaCheckInProgress = false;
+    Serial.println("OTA hiba: nem sikerült elindítani a frissítési feladatot.");
+    return false;
+  }
+  return true;
+}
+
+void checkOtaSchedule()
+{
+  if (WiFi.status() != WL_CONNECTED)
+    return;
+
+  tm timeInfo{};
+  if (!getLocalTimeSafe(timeInfo) || timeInfo.tm_year < 120)
+    return;
+
+  const int dateKey = timeInfo.tm_year * 366 + timeInfo.tm_yday;
+  if (!otaStartupCheckDone)
+  {
+    if (startOtaCheck())
+    {
+      otaStartupCheckDone = true;
+      if (timeInfo.tm_hour >= 3)
+        lastOtaCheckDate = dateKey;
+    }
+    return;
+  }
+
+  if (timeInfo.tm_hour >= 3 && lastOtaCheckDate != dateKey &&
+      startOtaCheck())
+    lastOtaCheckDate = dateKey;
+}
 } // namespace
 
 void setup()
@@ -704,6 +874,7 @@ void loop()
     ntpConfigured = false;
 
   checkDailySchedule();
+  checkOtaSchedule();
   updateLightOutput();
   delay(2);
 }
