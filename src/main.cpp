@@ -466,7 +466,6 @@ const char PAGE[] PROGMEM = R"HTML(
     <button class="secondary" onclick="setLight(false)">Kikapcsolás</button>
     <label for="brightness">Fényerő: <span id="brightnessValue">100%</span></label>
     <input id="brightness" type="range" min="0" max="100" step="1" value="100">
-    <p class="muted">Logaritmikus skála; a fényerő változtatása fokozatos, teljes tartományon kb. 2 másodperc.</p>
     <p class="muted" id="clockStatus"></p>
   </section>
   <section>
