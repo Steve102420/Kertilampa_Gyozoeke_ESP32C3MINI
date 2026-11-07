@@ -216,7 +216,7 @@ void updateLightOutput()
   }
 
   const uint8_t logicalDuty = static_cast<uint8_t>(roundf(currentBrightness));
-  writeLightPwm(LIGHT_PWM_MAX - logicalDuty);
+  writeLightPwm(logicalDuty);
 }
 
 void rampLightToCurrentTarget()
