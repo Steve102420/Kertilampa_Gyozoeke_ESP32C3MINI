@@ -9,6 +9,7 @@
 #include <time.h>
 
 extern const uint8_t rootca_crt_bundle_start[] asm("_binary_data_cert_x509_crt_bundle_bin_start");
+extern const uint8_t rootca_crt_bundle_end[] asm("_binary_data_cert_x509_crt_bundle_bin_end");
 
 namespace
 {
@@ -709,7 +710,12 @@ bool validOtaTag(const String &tag)
 void performOtaCheck()
 {
   WiFiClientSecure secureClient;
+#if defined(ESP_ARDUINO_VERSION_MAJOR) && ESP_ARDUINO_VERSION_MAJOR >= 3
+  secureClient.setCACertBundle(rootca_crt_bundle_start,
+                               rootca_crt_bundle_end - rootca_crt_bundle_start);
+#else
   secureClient.setCACertBundle(rootca_crt_bundle_start);
+#endif
 
   HTTPClient http;
   http.setTimeout(OTA_HTTP_TIMEOUT_MS);
