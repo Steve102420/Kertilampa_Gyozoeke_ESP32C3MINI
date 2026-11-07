@@ -549,7 +549,7 @@ async function refresh() {
     if (document.activeElement !== document.getElementById('onTime')) document.getElementById('onTime').value = s.onTime;
     if (document.activeElement !== document.getElementById('offTime')) document.getElementById('offTime').value = s.offTime;
     if (document.activeElement !== document.getElementById('timeZone')) document.getElementById('timeZone').value = s.timeZone;
-    document.getElementById('clockStatus').textContent = s.ntpSynced ? 'Helyi idő (' + s.timeZone + '): ' + s.localTime + ' (NTP szinkronizálva)' : 'NTP időszinkronra vár.';
+    document.getElementById('clockStatus').textContent = s.ntpSynced ? 'Helyi idő (' + s.timeZone + '): ' + s.localTime + ' (Szinkronizálva)' : 'NTP időszinkronra vár.';
     document.getElementById('wifiStatus').textContent = s.wifiConnected
       ? 'Csatlakozva: ' + s.currentSsid + ' — IP-cím: ' + s.ip
       : 'Beállító hálózat: Kertilampa-Setup — IP-cím: ' + s.ip + (s.savedSsid ? ' — Mentett hálózat: ' + s.savedSsid : '');
