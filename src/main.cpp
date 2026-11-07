@@ -31,6 +31,9 @@ constexpr char OTA_RELEASE_DOWNLOAD[] =
 constexpr char OTA_TAG_PREFIX[] = "ota-";
 constexpr uint32_t OTA_HTTP_TIMEOUT_MS = 15000;
 constexpr uint32_t OTA_TASK_STACK_SIZE = 8192;
+constexpr unsigned long WIFI_RETRY_INTERVAL_MS = 10000;
+constexpr unsigned long WIFI_RETRY_BATCH_PAUSE_MS = 10UL * 60UL * 1000UL;
+constexpr uint8_t WIFI_RETRIES_PER_BATCH = 10;
 
 #ifndef FIRMWARE_VERSION
 #define FIRMWARE_VERSION "development"
@@ -80,7 +83,10 @@ bool otaStartupCheckDone = false;
 int lastOtaCheckDate = -1;
 volatile bool otaCheckInProgress = false;
 int lastNtpSyncDate = -1;
-unsigned long lastReconnectAttempt = 0;
+uint8_t wifiAttemptsInBatch = 0;
+unsigned long nextWifiAttemptAt = 0;
+bool wifiRetryScheduled = false;
+bool wifiWasConnected = false;
 
 const TimeZoneOption *findTimeZone(const String &id)
 {
@@ -654,12 +660,47 @@ void checkDailySchedule()
 
 void reconnectWifiIfNeeded()
 {
-  if (savedSsid.isEmpty() || WiFi.status() == WL_CONNECTED ||
-      millis() - lastReconnectAttempt < 30000)
+  if (WiFi.status() == WL_CONNECTED)
+  {
+    wifiAttemptsInBatch = 0;
+    wifiRetryScheduled = false;
+    wifiWasConnected = true;
+    return;
+  }
+
+  if (wifiWasConnected)
+  {
+    Serial.println("Wi-Fi kapcsolat megszakadt; újracsatlakozás indul.");
+    wifiWasConnected = false;
+    wifiAttemptsInBatch = 0;
+    wifiRetryScheduled = true;
+    nextWifiAttemptAt = millis();
+  }
+
+  if (savedSsid.isEmpty())
     return;
 
-  lastReconnectAttempt = millis();
+  const unsigned long now = millis();
+  if (wifiRetryScheduled && static_cast<long>(now - nextWifiAttemptAt) < 0)
+    return;
+
+  if (wifiAttemptsInBatch >= WIFI_RETRIES_PER_BATCH)
+  {
+    wifiAttemptsInBatch = 0;
+    Serial.println("A Wi-Fi újrapróbálkozási szünet lejárt; újabb 10 próba indul.");
+  }
+
+  ++wifiAttemptsInBatch;
+  Serial.printf("Wi-Fi csatlakozási próba: %u/%u.\n",
+                wifiAttemptsInBatch, WIFI_RETRIES_PER_BATCH);
   WiFi.begin(savedSsid.c_str(), preferences.getString("password", "").c_str());
+  wifiRetryScheduled = true;
+  nextWifiAttemptAt = millis() +
+                      (wifiAttemptsInBatch >= WIFI_RETRIES_PER_BATCH
+                           ? WIFI_RETRY_BATCH_PAUSE_MS
+                           : WIFI_RETRY_INTERVAL_MS);
+  if (wifiAttemptsInBatch >= WIFI_RETRIES_PER_BATCH)
+    Serial.println("A 10 sikertelen próba után 10 perc szünet következik.");
 }
 
 String extractJsonStringField(const String &json, const char *field)
@@ -855,8 +896,7 @@ void setup()
   else
     MDNS.addService("http", "tcp", 80);
 
-  if (!savedSsid.isEmpty())
-    WiFi.begin(savedSsid.c_str(), preferences.getString("password", "").c_str());
+  reconnectWifiIfNeeded();
 
   configureRoutes();
   server.begin();
