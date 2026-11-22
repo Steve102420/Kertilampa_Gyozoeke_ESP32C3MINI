@@ -20,7 +20,7 @@ constexpr uint8_t LIGHT_PWM_RESOLUTION = 8;
 constexpr uint16_t LIGHT_PWM_MAX = (1 << LIGHT_PWM_RESOLUTION) - 1;
 constexpr uint32_t LIGHT_FULL_RAMP_MS = 2000;
 constexpr char AP_SSID[] = "Kertilampa-Setup";
-constexpr char AP_PASSWORD[] = "KertiLampa4";
+constexpr char AP_PASSWORD[] = "KertiLampa1";
 constexpr char NTP_SERVER_1[] = "pool.ntp.org";
 constexpr char NTP_SERVER_2[] = "time.google.com";
 constexpr char DEFAULT_TIME_ZONE[] = "Europe/Budapest";
@@ -370,10 +370,10 @@ void handleSetBrightness()
   const String value = server.arg("brightness");
   const int requestedBrightness = value.toInt();
   if (value.isEmpty() || String(requestedBrightness) != value ||
-      requestedBrightness < 0 || requestedBrightness > 100)
+      requestedBrightness < 1 || requestedBrightness > 100)
   {
     server.send(400, "application/json; charset=utf-8",
-                "{\"error\":\"A fényerő értéke 0 és 100 közötti egész szám legyen.\"}");
+                "{\"error\":\"A fényerő értéke 1 és 100 közötti egész szám legyen.\"}");
     return;
   }
 
@@ -471,7 +471,7 @@ const char PAGE[] PROGMEM = R"HTML(
     <button onclick="setLight(true)">Bekapcsolás</button>
     <button class="secondary" onclick="setLight(false)">Kikapcsolás</button>
     <label for="brightness">Fényerő: <span id="brightnessValue">100%</span></label>
-    <input id="brightness" type="range" min="0" max="100" step="1" value="100">
+    <input id="brightness" type="range" min="1" max="100" step="1" value="100">
     <p class="muted" id="clockStatus"></p>
   </section>
   <section>
@@ -499,7 +499,7 @@ const char PAGE[] PROGMEM = R"HTML(
       <option value="Australia/Sydney">Sydney</option>
       <option value="Pacific/Auckland">Auckland</option>
     </select>
-    <button onclick="saveTimeZone()">Időzóna mentése</button>
+    <p><button onclick="saveTimeZone()">Időzóna mentése</button></p>
     <p class="muted">A nyári/téli időszámítás az adott időzóna szabályai szerint automatikus.</p>
   </section>
   <section>
@@ -871,6 +871,11 @@ void setup()
   offTime = preferences.getString("offTime", "22:00");
   timeZoneId = preferences.getString("timeZone", DEFAULT_TIME_ZONE);
   brightnessPercent = preferences.getUChar("brightness", 100);
+  if (brightnessPercent < 1)
+  {
+    brightnessPercent = 1;
+    preferences.putUChar("brightness", brightnessPercent);
+  }
   if (brightnessPercent > 100)
     brightnessPercent = 100;
   if (findTimeZone(timeZoneId) == nullptr)
